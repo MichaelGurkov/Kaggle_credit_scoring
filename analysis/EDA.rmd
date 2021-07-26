@@ -1,0 +1,189 @@
+
+
+
+
+```{r load_libraries}
+
+devtools::load_all()
+
+library(tidymodels)
+
+library(tidyverse)
+
+library(glue)
+
+library(skimr)
+
+library(corrr)
+
+```
+
+```{r load_data}
+
+data("train_set")
+
+train_set = train_set %>% 
+  rename(target = serious_dlqin_2yrs)
+
+```
+
+
+```{r preprocess_data}
+
+preprocess_recipe = recipe(formula = target ~ ., data = train_set) %>%
+  step_filter(monthly_income >= 1000) %>% 
+  step_mutate_at(-"target",
+                 fn = ~ DescTools::Winsorize(., probs = c(0.05, 0.9), na.rm = TRUE))
+
+train_set_transformed = preprocess_recipe %>% 
+  prep() %>% 
+  bake(train_set)
+
+```
+
+## Missing values
+
+```{r plot_missing}
+
+train_set %>% 
+  pivot_longer(everything()) %>% 
+  group_by(name) %>% 
+  summarise(na_share = sum(is.na(value)) / length(value), .groups = "drop") %>% 
+  ggplot(aes(x = reorder(name, na_share), y = na_share)) + 
+  geom_col() + 
+  ylab(NULL) + xlab(NULL) + ggtitle("Missing values share") + 
+  scale_y_continuous(labels = scales::percent_format()) + 
+  coord_flip()
+
+```
+
+We can see that about 20% of monthly income is missing. we should try to impute the
+missing data because it seems costly to drop 20%.
+
+```{r impute_income}
+
+
+
+```
+
+
+
+## Numeric features
+
+```{r desc_stats}
+
+skim(train_set)
+
+```
+
+
+We can see that debt ratio and monthly income have large positive oultliers
+(in case on debt ratio the value should not exceed 1). Looking at debt ratio we see that values that are higher than 1 are for obs with zero monthly income. I'll check what is
+their target status
+
+```{r}
+
+train_set %>% 
+  filter(monthly_income < 5) %>% 
+  ggplot(aes(x = monthly_income, y = debt_ratio, color = factor(target))) + 
+  geom_point()
+
+
+```
+
+
+
+```{r feature_dist}
+
+train_set %>% 
+  pivot_longer(cols = everything()) %>% 
+  ggplot(aes(y = value)) + 
+  geom_boxplot() + 
+  facet_wrap(~name, scales = "free")
+
+```
+
+
+
+```{r feature_dist_transformed}
+
+train_set_transformed %>% 
+  pivot_longer(cols = everything()) %>% 
+  ggplot(aes(y = value)) + 
+  geom_boxplot() + 
+  facet_wrap(~name, scales = "free")
+
+```
+
+We can see that all the features have outliers
+
+
+```{r class_balance}
+
+train_set %>% 
+  count(target) %>% 
+  mutate(n = n / sum(n)) %>% 
+  ggplot(aes(x = target, y = n, fill = factor(target))) + 
+  geom_col() + 
+  scale_y_continuous(labels = scales::percent_format()) + 
+  scale_fill_viridis_d() + 
+  labs(fill = "Target") + 
+  xlab(NULL) + ylab(NULL) + ggtitle("Target class is unbalanced") +
+
+
+```
+
+```{r correlation}
+
+train_set %>% 
+  correlate() %>% 
+  stretch() %>% 
+  filter(y == "serious_dlqin_2yrs") %>% 
+  filter(complete.cases(.)) %>% 
+  ggplot(aes(x = reorder(x,r), y = r)) + 
+  geom_col() + 
+  coord_flip() + 
+  xlab(NULL) + ylab(NULL)
+
+```
+
+We can see that "missing payments" features are positively correlated, monthly income and
+age is negatively correlated. Interestingly the number of open credit lines is also negatively correlated.
+
+```{r open_credit_lines}
+
+train_set %>% 
+  ggplot(aes(x = number_of_open_credit_lines_and_loans,
+             fill = factor(target))) + 
+  geom_density(alpha = 0.5) + 
+  scale_fill_viridis_d() + 
+  labs(fill = "Target") + 
+  ylab(NULL) + ggtitle("Individuals with small number of credit lines are defaulting")
+
+train_set %>% 
+  filter(number_of_open_credit_lines_and_loans < 10) %>%
+  count(number_of_open_credit_lines_and_loans, target) %>% 
+  group_by(number_of_open_credit_lines_and_loans) %>% 
+  mutate(n = n / sum(n)) %>%
+  mutate(target = factor(target)) %>% 
+  ggplot(aes(x = number_of_open_credit_lines_and_loans, y = n, fill = target)) + 
+  geom_col() + 
+  scale_y_continuous(labels = scales::percent_format()) + 
+  ggtitle("The proportion of defaults is higher in low number of credit lines")
+
+
+
+```
+
+
+```{r scatter_plots}
+
+train_set %>% 
+  pivot_longer(-target) %>% 
+  ggplot(aes(x = value, fill = factor(target))) + 
+  geom_density() + 
+  facet_wrap(~name, scales = "free")
+  
+
+```
+
