@@ -1,7 +1,5 @@
 
 
-
-
 ```{r load_libraries}
 
 devtools::load_all()
@@ -23,7 +21,9 @@ library(corrr)
 data("train_set")
 
 train_set = train_set %>% 
-  rename(target = serious_dlqin_2yrs)
+  rename(target = serious_dlqin_2yrs) %>% 
+  # mutate(across(where(~length(unique(.)) < 2), as.factor)) %>% 
+  identity()
 
 ```
 
@@ -32,8 +32,10 @@ train_set = train_set %>%
 
 preprocess_recipe = recipe(formula = target ~ ., data = train_set) %>%
   step_filter(monthly_income >= 1000) %>% 
-  step_mutate_at(-"target",
-                 fn = ~ DescTools::Winsorize(., probs = c(0.05, 0.9), na.rm = TRUE))
+  step_mutate_at(c("monthly_income", "debt_ratio"),
+                 fn = ~ DescTools::Winsorize(., probs = c(0,0.95), na.rm = TRUE)) %>% 
+  step_mutate_at(c("monthly_income", "debt_ratio"),
+                 fn = ~ log(.))
 
 train_set_transformed = preprocess_recipe %>% 
   prep() %>% 
@@ -66,9 +68,19 @@ missing data because it seems costly to drop 20%.
 
 ```
 
-
-
 ## Numeric features
+
+
+```{r boxplot}
+
+train_set %>% 
+  pivot_longer(-target) %>% 
+  ggplot(aes(y = value, fill = target)) + 
+  geom_boxplot() + 
+  facet_wrap(~name)
+
+```
+
 
 ```{r desc_stats}
 
@@ -77,43 +89,87 @@ skim(train_set)
 ```
 
 
-We can see that debt ratio and monthly income have large positive oultliers
-(in case on debt ratio the value should not exceed 1). Looking at debt ratio we see that values that are higher than 1 are for obs with zero monthly income. I'll check what is
-their target status
+The "count" variables are characterized by outliers, I'll leave them untransformed.
 
-```{r}
+```{r count_features}
 
 train_set %>% 
-  filter(monthly_income < 5) %>% 
-  ggplot(aes(x = monthly_income, y = debt_ratio, color = factor(target))) + 
-  geom_point()
-
-
-```
-
-
-
-```{r feature_dist}
-
-train_set %>% 
-  pivot_longer(cols = everything()) %>% 
-  ggplot(aes(y = value)) + 
-  geom_boxplot() + 
+  select(starts_with("number")) %>% 
+  pivot_longer(everything()) %>% 
+  ggplot(aes(x = value)) + 
+  geom_histogram() + 
   facet_wrap(~name, scales = "free")
+```
+
+winsorizing at 95% and then log transforming the income and debt seems to "balance" the skewness
+
+```{r income_and_debt_ratio}
+
+train_set %>% 
+  filter(monthly_income >= 1000) %>% 
+  select(monthly_income, debt_ratio) %>% 
+  mutate(across(everything(), ~DescTools::Winsorize(., probs = c(0,0.95)))) %>% 
+  pivot_longer(everything()) %>%
+  ggplot(aes(x = log(value))) + 
+  geom_histogram() + 
+  facet_wrap(~name, scales = "free") + 
+  ggtitle("Histogram of log transformed features")
+
+
+```
+
+
+### features
+
+\code{revolving_utilization_of_unsecured_lines} - this feature is defined as the ratio of used credit (balance on credit cards and no installment debt like car loans) to total credit limits. This feature shouldn't be larger than 1, checking for right tail we see that `glue(round((ecdf(train_set$revolving_utilization_of_unsecured_lines)(1)) * 100,1),"%")` are in the proper range. We can divide the feature to 3 groups: 
+norm(below 1), med(between 1 and 10) and hign(above 10). We can see that we have about 2% of the obs in the med groups and insignificant number (few dozens) in high group. We can see that in the normal group higher values means more default and in "outlier" groups this is the other way around.
+
+
+```{r revolving_utilization_of_unsecured_lines_tail}
+
+train_set %>%
+  mutate(ind = case_when(revolving_utilization_of_unsecured_lines < 1 ~ "norm",
+                         revolving_utilization_of_unsecured_lines < 10 ~ "med",
+                         revolving_utilization_of_unsecured_lines > 10 ~ "high")) %>% 
+  mutate(ind = factor(ind, levels = c("norm","med","high"))) %>% 
+  ggplot(aes(x = revolving_utilization_of_unsecured_lines, fill = as_factor(target))) + 
+  geom_histogram() + 
+  facet_wrap(~ind, scales = "free")
+
+```
+
+\code{number_of_dependents} - this feature specifies the number of dependents 
+excluding the borrower (spouse, children, etc)
+
+```{r number_of_dependents}
+
+train_set %>%
+  select(target, number_of_dependents) %>% 
+  filter(complete.cases(.)) %>% 
+  mutate(ind = case_when(number_of_dependents <= 5 ~ "norm",
+                         number_of_dependents > 5 ~ "outliers")) %>% 
+  mutate(ind = factor(ind, levels = c("norm","outliers"))) %>% 
+  ggplot(aes(x = as.factor(number_of_dependents), fill = as_factor(target))) + 
+  geom_histogram(position = "dodge",stat = "count") + 
+  facet_wrap(~ind, scales = "free") + 
+  xlab("Number of dependents") + 
+  labs(fill = "Target")
 
 ```
 
 
 
-```{r feature_dist_transformed}
+
+```{r boxplot_transformed}
 
 train_set_transformed %>% 
-  pivot_longer(cols = everything()) %>% 
-  ggplot(aes(y = value)) + 
+  pivot_longer(-target) %>% 
+  ggplot(aes(y = value, fill = as.factor(target))) + 
   geom_boxplot() + 
   facet_wrap(~name, scales = "free")
 
 ```
+
 
 We can see that all the features have outliers
 
@@ -123,12 +179,12 @@ We can see that all the features have outliers
 train_set %>% 
   count(target) %>% 
   mutate(n = n / sum(n)) %>% 
-  ggplot(aes(x = target, y = n, fill = factor(target))) + 
+  ggplot(aes(x = factor(target), y = n, fill = factor(target))) + 
   geom_col() + 
   scale_y_continuous(labels = scales::percent_format()) + 
   scale_fill_viridis_d() + 
   labs(fill = "Target") + 
-  xlab(NULL) + ylab(NULL) + ggtitle("Target class is unbalanced") +
+  xlab(NULL) + ylab(NULL) + ggtitle("Target class is unbalanced")
 
 
 ```
@@ -138,7 +194,7 @@ train_set %>%
 train_set %>% 
   correlate() %>% 
   stretch() %>% 
-  filter(y == "serious_dlqin_2yrs") %>% 
+  filter(y == "target") %>% 
   filter(complete.cases(.)) %>% 
   ggplot(aes(x = reorder(x,r), y = r)) + 
   geom_col() + 
@@ -151,14 +207,6 @@ We can see that "missing payments" features are positively correlated, monthly i
 age is negatively correlated. Interestingly the number of open credit lines is also negatively correlated.
 
 ```{r open_credit_lines}
-
-train_set %>% 
-  ggplot(aes(x = number_of_open_credit_lines_and_loans,
-             fill = factor(target))) + 
-  geom_density(alpha = 0.5) + 
-  scale_fill_viridis_d() + 
-  labs(fill = "Target") + 
-  ylab(NULL) + ggtitle("Individuals with small number of credit lines are defaulting")
 
 train_set %>% 
   filter(number_of_open_credit_lines_and_loans < 10) %>%
@@ -176,9 +224,9 @@ train_set %>%
 ```
 
 
-```{r scatter_plots}
+```{r density_plots}
 
-train_set %>% 
+train_set_transformed %>% 
   pivot_longer(-target) %>% 
   ggplot(aes(x = value, fill = factor(target))) + 
   geom_density() + 
