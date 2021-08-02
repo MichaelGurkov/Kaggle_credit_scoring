@@ -29,11 +29,14 @@ train_set = train_set %>%
 ```{r preprocess_data}
 
 preprocess_recipe = recipe(formula = target ~ ., data = train_set) %>%
+  step_mutate(target = factor(target, levels = c(1,0))) %>% 
   step_filter(monthly_income >= 1000) %>% 
+  step_impute_median("number_of_dependents") %>% 
   step_mutate_at(c("monthly_income", "debt_ratio"),
                  fn = ~ DescTools::Winsorize(., probs = c(0,0.95), na.rm = TRUE)) %>% 
   step_mutate_at(c("monthly_income", "debt_ratio"),
-                 fn = ~ log(.))
+                 fn = ~ log(. + 1)) %>% 
+  step_impute_median("monthly_income")
 
 train_set_transformed = preprocess_recipe %>% 
   prep() %>% 
@@ -98,7 +101,7 @@ train_set %>%
   facet_wrap(~name, scales = "free")
 ```
 
-winsorizing at 95% and then log transforming the income and debt seems to "balance" the skewness
+winsorizing at 95% and then log transforming the income and debt seems to improve the skewness
 
 ```{r income_and_debt_ratio}
 
@@ -153,6 +156,49 @@ train_set %>%
 
 ```
 
+\code{number_of_open_credit_lines_and_loans} - this feature describes the number of open loans (installment like car loan or mortgage) and lines of credit (e.g. credit cards)
+
+
+```{r number_of_open_credit_lines_and_loans}
+
+train_set %>% 
+  count(number_of_open_credit_lines_and_loans) %>% 
+  mutate(ind = case_when(number_of_open_credit_lines_and_loans <= 20 ~ "norm",
+                         number_of_open_credit_lines_and_loans > 20 ~ "outliers")) %>% 
+  ggplot(aes(x = number_of_open_credit_lines_and_loans, y = n)) + 
+  geom_col() + 
+  ylab(NULL) + ggtitle("Distribution of open credit lines") + 
+  facet_wrap(~ind, scales = "free")
+
+```
+
+About `glue(round((ecdf(train_set$number_of_open_credit_lines_and_loans)(20)) * 100,1),"%")` of open credit lines are less than 20.
+
+\code{number_real_estate_loans_or_lines} - this feature describes the number of mortgage and real estate loans including home equity lines of credit.
+
+
+```{r number_real_estate_loans_or_lines}
+
+train_set %>% 
+  count(number_real_estate_loans_or_lines) %>% 
+  mutate(ind = case_when(number_real_estate_loans_or_lines <= 10 ~ "norm",
+                         number_real_estate_loans_or_lines > 10 ~ "outliers")) %>%
+  ggplot(aes(x = number_real_estate_loans_or_lines, y = n)) + 
+  geom_col() + 
+  ylab(NULL) + ggtitle("Distribution of real estate loans") + 
+  facet_wrap(~ind, scales = "free") +
+  NULL
+
+```
+
+About `glue(round((ecdf(train_set$number_real_estate_loans_or_lines)(5)) * 100,1),"%")` of open credit lines are less than 5.
+
+
+## Summary
+
+* winsorize (at 95%) and log transform income and debt ratio
+
+* maybe deal with outliers
 
 
 
@@ -183,6 +229,7 @@ train_set %>%
 
 
 ```
+
 
 ```{r correlation}
 

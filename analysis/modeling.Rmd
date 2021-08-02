@@ -1,0 +1,94 @@
+
+```{r libraries}
+
+library(tidymodels)
+
+library(tidyverse)
+
+
+
+```
+
+```{r load_data}
+
+data("train_set")
+
+data_df = train_set %>% 
+  rename(target = serious_dlqin_2yrs) %>% 
+  # mutate(across(where(~length(unique(.)) < 2), as.factor)) %>% 
+  identity()
+
+rm(train_set)
+
+```
+
+```{r split_data}
+
+data_split = initial_split(data_df)
+
+train_set = training(data_split)
+
+test_set = testing(data_split)
+
+```
+
+
+
+```{r define_preprocess_recipes}
+
+preprocess_recipe = recipe(formula = target ~ ., data = train_set) %>%
+  step_mutate(target = factor(target, levels = c(1,0))) %>% 
+  step_filter(monthly_income >= 1000) %>% 
+  step_impute_median("number_of_dependents") %>% 
+  step_mutate_at(c("monthly_income", "debt_ratio"),
+                 fn = ~ DescTools::Winsorize(., probs = c(0,0.95), na.rm = TRUE)) %>% 
+  step_mutate_at(c("monthly_income", "debt_ratio"),
+                 fn = ~ log(. + 1)) %>% 
+  step_impute_median("monthly_income")
+
+
+```
+
+```{r define_models}
+
+logit_mod = logistic_reg(penalty = 0.01) %>% 
+  set_engine("glmnet")
+
+
+rf_mod = rand_forest() %>% 
+  set_mode("classification") %>% 
+  set_engine("randomForest")
+
+```
+
+```{r set_cv_params}
+
+cv_resamples = vfold_cv(v = 2, data = train_set)
+
+grid_spec = grid_regular(penalty(),trees(), levels = 10)
+
+```
+
+```{r pack_workflowset}
+
+wf_set = workflow_set(preproc = list(preproc = preprocess_recipe),
+                      models = list(logit = logit_mod, rf = rf_mod))
+
+
+model_train = wf_set %>%
+  workflow_map(resamples = cv_resamples,
+               fn = "fit_resamples",
+               verbose = TRUE)
+
+
+```
+
+```{r evaluate_results}
+
+model_train %>% 
+  rank_results(select_best = TRUE) %>% 
+  filter(.metric == "roc_auc") %>% 
+  select(wflow_id, mean, std_err, model, rank)
+
+```
+
