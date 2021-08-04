@@ -15,8 +15,11 @@ data("train_set")
 
 data_df = train_set %>% 
   rename(target = serious_dlqin_2yrs) %>% 
-  # mutate(across(where(~length(unique(.)) < 2), as.factor)) %>% 
   identity()
+
+
+data_df = data_df %>% 
+  slice_sample(n = 10000)
 
 rm(train_set)
 
@@ -24,15 +27,13 @@ rm(train_set)
 
 ```{r split_data}
 
-data_split = initial_split(data_df)
+data_split = initial_split(data_df, strata = target)
 
 train_set = training(data_split)
 
 test_set = testing(data_split)
 
 ```
-
-
 
 ```{r define_preprocess_recipes}
 
@@ -44,40 +45,55 @@ preprocess_recipe = recipe(formula = target ~ ., data = train_set) %>%
                  fn = ~ DescTools::Winsorize(., probs = c(0,0.95), na.rm = TRUE)) %>% 
   step_mutate_at(c("monthly_income", "debt_ratio"),
                  fn = ~ log(. + 1)) %>% 
-  step_impute_median("monthly_income")
+  step_impute_median("monthly_income") %>% 
+  step_normalize(all_predictors())
 
 
 ```
 
 ```{r define_models}
 
-logit_mod = logistic_reg(penalty = 0.01) %>% 
+logit_mod = logistic_reg(penalty = tune()) %>% 
   set_engine("glmnet")
 
-
-rf_mod = rand_forest() %>% 
+svm_lin_mod = svm_linear(cost = tune()) %>% 
   set_mode("classification") %>% 
-  set_engine("randomForest")
+  set_engine("kernlab")
+
+svm_rbf_mod = svm_rbf(cost = tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("kernlab")
+
+
+rf_mod = rand_forest(mtry = tune(),trees = 1000) %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger")
 
 ```
 
 ```{r set_cv_params}
 
-cv_resamples = vfold_cv(v = 2, data = train_set)
+cv_resamples = vfold_cv(v = 5, data = train_set)
 
-grid_spec = grid_regular(penalty(),trees(), levels = 10)
 
 ```
 
 ```{r pack_workflowset}
 
-wf_set = workflow_set(preproc = list(preproc = preprocess_recipe),
-                      models = list(logit = logit_mod, rf = rf_mod))
+wf_set = workflow_set(
+  preproc = list(preproc = preprocess_recipe),
+  models = list(
+    logit = logit_mod,
+    svm_lin = svm_lin_mod,
+    svm_rbf = svm_rbf_mod
+  )
+)
 
 
 model_train = wf_set %>%
   workflow_map(resamples = cv_resamples,
-               fn = "fit_resamples",
+               fn = "tune_grid",
+               grid = 10,
                verbose = TRUE)
 
 
@@ -89,6 +105,10 @@ model_train %>%
   rank_results(select_best = TRUE) %>% 
   filter(.metric == "roc_auc") %>% 
   select(wflow_id, mean, std_err, model, rank)
+
+```
+
+```{r plot_results}
 
 ```
 

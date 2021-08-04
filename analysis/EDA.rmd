@@ -194,6 +194,35 @@ train_set %>%
 About `glue(round((ecdf(train_set$number_real_estate_loans_or_lines)(5)) * 100,1),"%")` of open credit lines are less than 5.
 
 
+\code{age} - younger people default more
+
+```{r age}
+
+train_set %>% 
+  ggplot(aes(x = age, fill = as.factor(target))) + 
+  geom_histogram(alpha = 0.8) + 
+  ylab(NULL) + ggtitle("Distribution of real estate loans") +
+  NULL
+
+```
+
+
+```{r binned_age}
+
+train_set %>% 
+  mutate(age_binned = cut(age,breaks = seq(0,110,10),
+                          labels = seq(0,110,10)[-1])) %>% 
+  count(age_binned, target) %>% 
+  group_by(age_binned) %>% 
+  mutate(prop = n / sum(n)) %>% 
+  ggplot(aes(x = age_binned, y = prop, fill = as_factor(target))) + 
+  geom_col() + 
+  scale_y_continuous(labels = scales::percent_format()) + 
+  xlab(NULL) + ggtitle("Age by groups")
+
+```
+
+
 ## Summary
 
 * winsorize (at 95%) and log transform income and debt ratio
