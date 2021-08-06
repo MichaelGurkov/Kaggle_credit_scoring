@@ -13,39 +13,42 @@ library(tidyverse)
 
 data("train_set")
 
-data_df = train_set %>% 
-  rename(target = serious_dlqin_2yrs) %>% 
-  identity()
+data("test_set")
 
-
-data_df = data_df %>% 
-  slice_sample(n = 10000)
-
-rm(train_set)
 
 ```
 
 ```{r split_data}
 
-data_split = initial_split(data_df, strata = target)
+indices = list(analysis = seq(nrow(train_set)),
+               assessment = nrow(train_set) + seq(nrow(test_set)))
+
+comb_data = train_set %>% 
+  bind_rows(test_set) %>% 
+  rename(target = serious_dlqin_2yrs)
+
+data_split = make_splits(ind = indices, data = comb_data)
+
+rm(indices, test_set, comb_data)
 
 train_set = training(data_split)
-
-test_set = testing(data_split)
 
 ```
 
 ```{r define_preprocess_recipes}
 
 preprocess_recipe = recipe(formula = target ~ ., data = train_set) %>%
-  step_mutate(target = factor(target, levels = c(1,0))) %>% 
-  step_filter(monthly_income >= 1000) %>% 
-  step_impute_median("number_of_dependents") %>% 
+  update_role("Id",new_role = "ID") %>% 
+  step_mutate(target = factor(target, levels = c(1, 0))) %>%
+  step_filter(monthly_income >= 1000) %>%
+  step_impute_median("number_of_dependents") %>%
+  step_mutate_at(
+    c("monthly_income", "debt_ratio"),
+    fn = ~ DescTools::Winsorize(., probs = c(0, 0.95), na.rm = TRUE)
+  ) %>%
   step_mutate_at(c("monthly_income", "debt_ratio"),
-                 fn = ~ DescTools::Winsorize(., probs = c(0,0.95), na.rm = TRUE)) %>% 
-  step_mutate_at(c("monthly_income", "debt_ratio"),
-                 fn = ~ log(. + 1)) %>% 
-  step_impute_median("monthly_income") %>% 
+                 fn = ~ log(. + 1)) %>%
+  step_impute_median("monthly_income") %>%
   step_normalize(all_predictors())
 
 
@@ -53,62 +56,61 @@ preprocess_recipe = recipe(formula = target ~ ., data = train_set) %>%
 
 ```{r define_models}
 
-logit_mod = logistic_reg(penalty = tune()) %>% 
+lasso_mod = logistic_reg(penalty = tune()) %>% 
   set_engine("glmnet")
 
-svm_lin_mod = svm_linear(cost = tune()) %>% 
-  set_mode("classification") %>% 
-  set_engine("kernlab")
 
-svm_rbf_mod = svm_rbf(cost = tune()) %>% 
-  set_mode("classification") %>% 
-  set_engine("kernlab")
-
-
-rf_mod = rand_forest(mtry = tune(),trees = 1000) %>% 
-  set_mode("classification") %>% 
-  set_engine("ranger")
 
 ```
 
 ```{r set_cv_params}
 
-cv_resamples = vfold_cv(v = 5, data = train_set)
+cv_resamples = vfold_cv(v = 10, data = train_set)
 
-
-```
-
-```{r pack_workflowset}
-
-wf_set = workflow_set(
-  preproc = list(preproc = preprocess_recipe),
-  models = list(
-    logit = logit_mod,
-    svm_lin = svm_lin_mod,
-    svm_rbf = svm_rbf_mod
-  )
-)
-
-
-model_train = wf_set %>%
-  workflow_map(resamples = cv_resamples,
-               fn = "tune_grid",
-               grid = 10,
-               verbose = TRUE)
-
+grid_spec = grid_regular(penalty(),levels = 10)
 
 ```
 
-```{r evaluate_results}
+```{r estimate}
 
-model_train %>% 
-  rank_results(select_best = TRUE) %>% 
-  filter(.metric == "roc_auc") %>% 
-  select(wflow_id, mean, std_err, model, rank)
+lasso_wf = workflow() %>% 
+  add_recipe(preprocess_recipe) %>% 
+  add_model(lasso_mod)
+
+lasso_res = lasso_wf %>%
+  tune_grid(resamples = cv_resamples,
+            grid = grid_spec)
 
 ```
 
-```{r plot_results}
+```{r plot_results, eval=FALSE}
+
+metrics = lasso_res %>% 
+  collect_metrics() %>% 
+  filter(.metric == "roc_auc")
+
+ggplot() +
+  geom_point(data = metrics, aes(x = penalty, y = mean)) +
+  geom_errorbar(data = metrics, aes(
+    x = penalty,
+    ymin = mean - std_err,
+    ymax = mean + std_err
+  )) +
+  scale_x_log10()
+
+```
+
+```{r forecast}
+
+forecast = lasso_wf %>% 
+  finalize_workflow(lasso_res %>%
+                select_best("roc_auc")) %>% 
+  last_fit(data_split)
+
+
+forecast_df = forecast %>% 
+  collect_predictions()
+
 
 ```
 
