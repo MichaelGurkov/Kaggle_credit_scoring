@@ -20,7 +20,6 @@ data("train_set")
 
 train_set = train_set %>% 
   rename(target = serious_dlqin_2yrs) %>% 
-  # mutate(across(where(~length(unique(.)) < 2), as.factor)) %>% 
   identity()
 
 ```
@@ -33,7 +32,8 @@ preprocess_recipe = recipe(formula = target ~ ., data = train_set) %>%
   step_filter(monthly_income >= 1000) %>% 
   step_impute_median("number_of_dependents") %>% 
   step_mutate_at(c("monthly_income", "debt_ratio"),
-                 fn = ~ DescTools::Winsorize(., probs = c(0,0.95), na.rm = TRUE)) %>% 
+                 fn = ~ DescTools::Winsorize(., probs = c(0,0.95),
+                                             na.rm = TRUE)) %>% 
   step_mutate_at(c("monthly_income", "debt_ratio"),
                  fn = ~ log(. + 1)) %>% 
   step_impute_median("monthly_income")
@@ -230,6 +230,35 @@ train_set %>%
 * maybe deal with outliers
 
 
+### Average customer
+
+```{r  average_values_plot}
+
+average_df = train_set_transformed %>% 
+  group_by(target) %>% 
+  summarise(across(everything(),
+                   .fns = list(AAAmean = mean, AAAmedian = median),
+                   na.rm = TRUE)) 
+
+average_df_long  = average_df %>% 
+  pivot_longer(-target) %>% 
+  separate(name, into = c("name","fun"),sep = "_AAA")
+
+ggplot() + 
+  geom_point(data = average_df_long %>% 
+               filter(fun == "mean"),
+             aes(x = target, y = value, color = target), size = 3) + 
+  geom_col(data = average_df_long %>% 
+             filter(fun == "median"),
+           aes(x = target, y = value, fill = target), width = 0.5, alpha = 0.5) + 
+  facet_wrap(~name, scales = "free") + 
+  xlab(NULL) + ylab(NULL) + ggtitle("Average feature values by target")
+
+rm(average_df_long)
+
+```
+
+
 
 ```{r boxplot_transformed}
 
@@ -274,8 +303,7 @@ train_set %>%
 
 ```
 
-We can see that "missing payments" features are positively correlated, monthly income and
-age is negatively correlated. Interestingly the number of open credit lines is also negatively correlated.
+We can see that "missing payments" features are positively correlated, monthly income and age is negatively correlated. Interestingly the number of open credit lines is also negatively correlated.
 
 ```{r open_credit_lines}
 
