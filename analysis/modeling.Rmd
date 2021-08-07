@@ -49,6 +49,7 @@ preprocess_recipe = recipe(formula = target ~ ., data = train_set) %>%
   step_mutate_at(c("monthly_income", "debt_ratio"),
                  fn = ~ log(. + 1)) %>%
   step_impute_median("monthly_income") %>%
+  step_mutate(age_sqr = age ^ 2) %>% 
   step_normalize(all_predictors())
 
 
@@ -72,6 +73,7 @@ grid_spec = grid_regular(penalty(),levels = 10)
 ```
 
 ```{r estimate}
+
 
 lasso_wf = workflow() %>% 
   add_recipe(preprocess_recipe) %>% 
