@@ -18,31 +18,48 @@ library(corrr)
 
 data("train_set")
 
+data("names_table")
+
 train_set = train_set %>% 
-  rename(target = serious_dlqin_2yrs) %>% 
-  identity()
+  rename_at(names_table$full_name, ~names_table$feature_name)
 
 ```
+
 
 
 ```{r preprocess_data}
 
 preprocess_recipe = recipe(formula = target ~ ., data = train_set) %>%
   step_mutate(target = factor(target, levels = c(1,0))) %>% 
-  step_filter(monthly_income >= 1000) %>% 
-  step_impute_median("number_of_dependents") %>% 
-  step_mutate_at(c("monthly_income", "debt_ratio"),
+  step_filter(income >= 1000) %>% 
+  step_impute_median("dependents") %>% 
+  step_mutate_at(c("income", "debt_ratio"),
                  fn = ~ DescTools::Winsorize(., probs = c(0,0.95),
                                              na.rm = TRUE)) %>% 
-  step_mutate_at(c("monthly_income", "debt_ratio"),
+  step_mutate_at(c("income", "debt_ratio"),
                  fn = ~ log(. + 1)) %>% 
-  step_impute_median("monthly_income")
+  step_impute_median("income")
+
+
+# alternative_recipe = recipe(formula = target ~ ., data = train_set) %>%
+#   step_mutate(target = factor(target, levels = c(1,0))) %>% 
+#   step_filter(monthly_income >= 1000) %>% 
+#   step_impute_median("number_of_dependents") %>% 
+#   step_impute_median("monthly_income") %>% 
+#   step_mutate_at(c("monthly_income", "debt_ratio"),
+#                  fn = ~ DescTools::Winsorize(., probs = c(0,0.95),
+#                                              na.rm = TRUE)) %>% 
+#   step_YeoJohnson(c("monthly_income", "debt_ratio"))
+
+
 
 train_set_transformed = preprocess_recipe %>% 
   prep() %>% 
   bake(train_set)
 
 ```
+
+# Raw data analysis
 
 ## Missing values
 
@@ -60,16 +77,20 @@ train_set %>%
 
 ```
 
-We can see that about 20% of monthly income is missing. we should try to impute the
-missing data because it seems costly to drop 20%.
-
-```{r impute_income}
-
-
-
-```
+We can see that about 20% of monthly income is missing. we should try to impute the missing data because it seems costly to drop 20%.
 
 ## Numeric features
+
+
+```{r histogram}
+
+train_set %>% 
+  pivot_longer(-target) %>% 
+  ggplot(aes(x = value, fill = target)) + 
+  geom_histogram() + 
+  facet_wrap(~name, scales = "free")
+
+```
 
 
 ```{r boxplot}
@@ -78,7 +99,7 @@ train_set %>%
   pivot_longer(-target) %>% 
   ggplot(aes(y = value, fill = target)) + 
   geom_boxplot() + 
-  facet_wrap(~name)
+  facet_wrap(~name, scales = "free")
 
 ```
 
@@ -332,6 +353,76 @@ train_set_transformed %>%
   geom_density() + 
   facet_wrap(~name, scales = "free")
   
+
+```
+
+
+
+# Transformed data analysis
+
+```{r roc_contribution}
+
+
+roc_auc_df = names(train_set_transformed) %>% 
+  enframe() %>% 
+  select(temp_var = value) %>% 
+  filter(!temp_var == "target")
+
+
+roc_auc_df = roc_auc_df %>% 
+  mutate(roc_auc = map_dbl(temp_var, function(temp_name){
+    
+    temp_estimate = workflow() %>% 
+      add_formula(formula(glue("target ~ ", temp_name))) %>% 
+      add_model(logistic_reg()) %>% 
+      fit(train_set_transformed) %>% 
+      predict(type = "prob",train_set_transformed) %>% 
+      select(estimate = .pred_1) %>% 
+      bind_cols(select(train_set_transformed, truth = target)) %>% 
+      roc_auc(.,truth, estimate) %>% 
+      pull(.estimate)
+    
+    return(temp_estimate)
+
+
+  }))
+
+
+roc_auc_df %>% 
+  # mutate(roc_auc = if_else(roc_auc < 0.5, 1 - roc_auc, roc_auc)) %>% 
+  mutate(roc_auc = roc_auc - 0.5) %>% 
+  ggplot(aes(x = reorder(temp_var, roc_auc), y = roc_auc)) + 
+  geom_col() + 
+  coord_flip() + 
+  xlab(NULL) + ylab(NULL) + ggtitle("Feature importance by roc_auc delta")
+
+
+
+
+```
+
+
+```{r histogram_transformed}
+
+train_set_transformed %>% 
+  pivot_longer(-target) %>% 
+  ggplot(aes(x = value, fill = target)) + 
+  geom_density(alpha = 0.5) + 
+  facet_wrap(~name, scales = "free")
+
+```
+
+
+### Correlations
+
+```{r corelations}
+
+train_set_transformed %>% 
+  select(where(is.numeric)) %>% 
+  correlate() %>% 
+  shave() %>% 
+  rplot()
+
 
 ```
 
