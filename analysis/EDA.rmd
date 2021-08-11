@@ -4,6 +4,8 @@ devtools::load_all()
 
 library(tidymodels)
 
+tidymodels_prefer()
+
 library(tidyverse)
 
 library(glue)
@@ -30,32 +32,21 @@ train_set = train_set %>%
 ```{r preprocess_data}
 
 preprocess_recipe = recipe(formula = target ~ ., data = train_set) %>%
-  step_mutate(target = factor(target, levels = c(1,0))) %>% 
-  step_filter(income >= 1000) %>% 
-  step_impute_median("dependents") %>% 
-  step_mutate_at(c("income", "debt_ratio"),
-                 fn = ~ DescTools::Winsorize(., probs = c(0,0.95),
+  step_mutate(target = factor(target, levels = c(1, 0))) %>%
+  step_impute_median("dependents")  %>%
+  step_impute_median("income") %>% 
+  step_filter(income >= 1000) %>%
+  step_mutate_at(c("income", "debt_ratio", "ruul"),
+                 fn = ~ DescTools::Winsorize(., probs = c(0, 0.95),
                                              na.rm = TRUE)) %>% 
-  step_mutate_at(c("income", "debt_ratio"),
-                 fn = ~ log(. + 1)) %>% 
-  step_impute_median("income")
-
-
-# alternative_recipe = recipe(formula = target ~ ., data = train_set) %>%
-#   step_mutate(target = factor(target, levels = c(1,0))) %>% 
-#   step_filter(monthly_income >= 1000) %>% 
-#   step_impute_median("number_of_dependents") %>% 
-#   step_impute_median("monthly_income") %>% 
-#   step_mutate_at(c("monthly_income", "debt_ratio"),
-#                  fn = ~ DescTools::Winsorize(., probs = c(0,0.95),
-#                                              na.rm = TRUE)) %>% 
-#   step_YeoJohnson(c("monthly_income", "debt_ratio"))
-
+  step_mutate(debt_log = (log(debt_ratio * income + 1))) %>% 
+  step_center(contains("due")) %>% 
+  identity()
 
 
 train_set_transformed = preprocess_recipe %>% 
-  prep() %>% 
-  bake(train_set)
+  prep(training = train_set) %>% 
+  bake(new_data = NULL)
 
 ```
 
@@ -122,6 +113,27 @@ train_set %>%
   facet_wrap(~name, scales = "free")
 ```
 
+### Income and debt ratio
+
+```{r high_debt}
+
+income_debt_outliers = train_set %>% 
+  select(debt_ratio, income) %>% 
+  filter(debt_ratio >= quantile(debt_ratio, 0.95))
+  
+
+income_debt_outliers %>% 
+  mutate(debt = debt_ratio * income) %>% 
+  filter(debt <= quantile(debt,0.90, na.rm = TRUE)) %>%
+  ggplot(aes(x = debt)) + 
+  geom_histogram()
+
+
+```
+
+
+
+
 winsorizing at 95% and then log transforming the income and debt seems to improve the skewness
 
 ```{r income_and_debt_ratio}
@@ -142,19 +154,19 @@ train_set %>%
 ### features
 
 \code{revolving_utilization_of_unsecured_lines} - this feature is defined as the ratio of used credit (balance on credit cards and no installment debt like car loans) to total credit limits. This feature shouldn't be larger than 1, checking for right tail we see that `glue(round((ecdf(train_set$revolving_utilization_of_unsecured_lines)(1)) * 100,1),"%")` are in the proper range. We can divide the feature to 3 groups: 
-norm(below 1), med(between 1 and 10) and hign(above 10). We can see that we have about 2% of the obs in the med groups and insignificant number (few dozens) in high group. We can see that in the normal group higher values means more default and in "outlier" groups this is the other way around.
+norm(below 1), med(between 1 and 10) and hign(above 10). We can see that we have about 2% of the obs in the med groups and insignificant number (few dozens) in high group. We can see that in the normal group higher values means more default and in "outlier" groups this is the other way around. I winsorize the upper 5% of this feature - this improves it's roc_auc contribution.
 
 
 ```{r revolving_utilization_of_unsecured_lines_tail}
 
 train_set %>%
-  mutate(ind = case_when(revolving_utilization_of_unsecured_lines < 1 ~ "norm",
-                         revolving_utilization_of_unsecured_lines < 10 ~ "med",
-                         revolving_utilization_of_unsecured_lines > 10 ~ "high")) %>% 
-  mutate(ind = factor(ind, levels = c("norm","med","high"))) %>% 
-  ggplot(aes(x = revolving_utilization_of_unsecured_lines, fill = as_factor(target))) + 
-  geom_histogram() + 
-  facet_wrap(~ind, scales = "free")
+  mutate(ind = case_when(ruul < 1 ~ "norm",
+                         ruul < 10 ~ "med",
+                         ruul > 10 ~ "high")) %>%
+  mutate(ind = factor(ind, levels = c("norm", "med", "high"))) %>%
+  ggplot(aes(x = ruul, fill = as_factor(target))) +
+  geom_histogram() +
+  facet_wrap(~ ind, scales = "free")
 
 ```
 
@@ -240,6 +252,25 @@ train_set %>%
   geom_col() + 
   scale_y_continuous(labels = scales::percent_format()) + 
   xlab(NULL) + ggtitle("Age by groups")
+
+```
+
+
+\code{debt_ratio} - the ratio between monthly payments and monthly income 
+
+```{r debt_ratio}
+
+train_set %>% 
+  mutate(ind = case_when(debt_ratio < 1 ~ "norm",
+                         debt_ratio <= 100 ~ "med",
+                         debt_ratio > 100 ~ "high")) %>%
+  mutate(ind = factor(ind, levels = c("norm", "med", "high"))) %>% 
+  ggplot(aes(x = debt_ratio, fill = as.factor(target))) + 
+  geom_histogram(alpha = 0.8) + 
+  facet_wrap(~ind, scales = "free") + 
+  ylab(NULL) + ggtitle("Distribution of debt ratio") +
+  theme(legend.title = element_blank()) + 
+  NULL
 
 ```
 
@@ -358,6 +389,7 @@ train_set_transformed %>%
 
 
 
+
 # Transformed data analysis
 
 ```{r roc_contribution}
@@ -371,8 +403,7 @@ roc_auc_df = names(train_set_transformed) %>%
 
 roc_auc_df = roc_auc_df %>% 
   mutate(roc_auc = map_dbl(temp_var, function(temp_name){
-    
-    temp_estimate = workflow() %>% 
+     temp_estimate = workflow() %>% 
       add_formula(formula(glue("target ~ ", temp_name))) %>% 
       add_model(logistic_reg()) %>% 
       fit(train_set_transformed) %>% 
@@ -389,7 +420,6 @@ roc_auc_df = roc_auc_df %>%
 
 
 roc_auc_df %>% 
-  # mutate(roc_auc = if_else(roc_auc < 0.5, 1 - roc_auc, roc_auc)) %>% 
   mutate(roc_auc = roc_auc - 0.5) %>% 
   ggplot(aes(x = reorder(temp_var, roc_auc), y = roc_auc)) + 
   geom_col() + 
@@ -402,13 +432,14 @@ roc_auc_df %>%
 ```
 
 
-```{r histogram_transformed}
+```{r boxplot_transformed}
 
 train_set_transformed %>% 
+  mutate(debt_ratio = 1/(debt_ratio + 1)) %>% 
   pivot_longer(-target) %>% 
-  ggplot(aes(x = value, fill = target)) + 
-  geom_density(alpha = 0.5) + 
-  facet_wrap(~name, scales = "free")
+  ggplot(aes(x = target, y = value, fill = target)) + 
+  geom_boxplot() + 
+  facet_wrap(~name, scales = "free_y")
 
 ```
 
@@ -423,6 +454,31 @@ train_set_transformed %>%
   shave() %>% 
   rplot()
 
+
+```
+
+### Features
+
+### Income and debt ratio
+
+```{r debt_ratio}
+
+train_set_transformed %>% 
+  ggplot(aes(x = target, y = debt_log, fill = as.factor(target))) + 
+  geom_boxplot()
+
+
+```
+
+### "Count" features
+
+```{r count_hist}
+
+train_set_transformed %>% 
+  filter(large_due < 1) %>% 
+  select(large_due, target) %>% 
+  ggplot(aes(x = large_due, fill = as_factor(target))) + 
+  geom_histogram()
 
 ```
 
