@@ -401,28 +401,42 @@ roc_auc_df = names(train_set_transformed) %>%
   filter(!temp_var == "target")
 
 
-roc_auc_df = roc_auc_df %>% 
-  mutate(roc_auc = map_dbl(temp_var, function(temp_name){
-     temp_estimate = workflow() %>% 
-      add_formula(formula(glue("target ~ ", temp_name))) %>% 
-      add_model(logistic_reg()) %>% 
-      fit(train_set_transformed) %>% 
-      predict(type = "prob",train_set_transformed) %>% 
-      select(estimate = .pred_1) %>% 
-      bind_cols(select(train_set_transformed, truth = target)) %>% 
-      roc_auc(.,truth, estimate) %>% 
-      pull(.estimate)
+
+
+roc_auc_df = roc_auc_df %>%
+  mutate(roc_auc = map(temp_var, function(temp_name) {
     
-    return(temp_estimate)
+    temp_resample = workflow() %>%
+      add_formula(formula(glue("target ~ ", temp_name))) %>%
+      add_model(logistic_reg()) %>%
+      fit_resamples(
+        resamples = vfold_cv(
+          train_set_transformed,
+          v = 10,
+          repeats = 5,
+          strata = target
+        ),
+        metrics = metric_set(roc_auc)
+      )
+    
+    temp_metrics = temp_resample %>% 
+      collect_metrics()
+
+    
+    return(temp_metrics)
 
 
   }))
 
 
 roc_auc_df %>% 
-  mutate(roc_auc = roc_auc - 0.5) %>% 
-  ggplot(aes(x = reorder(temp_var, roc_auc), y = roc_auc)) + 
-  geom_col() + 
+  unnest(roc_auc) %>% 
+  mutate(mean = mean - 0.5) %>% 
+  ggplot() + 
+  geom_point(aes(x = reorder(temp_var, mean), y = mean)) + 
+  geom_errorbar(aes(x = reorder(temp_var, mean),
+                     ymax = mean + std_err, ymin = mean - std_err)) +
+  geom_hline(yintercept = 0, linetype = "dashed") + 
   coord_flip() + 
   xlab(NULL) + ylab(NULL) + ggtitle("Feature importance by roc_auc delta")
 
