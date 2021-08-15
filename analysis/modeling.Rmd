@@ -5,6 +5,9 @@ library(tidymodels)
 
 library(tidyverse)
 
+library(tictoc)
+
+library(doParallel)
 
 
 ```
@@ -13,61 +16,62 @@ library(tidyverse)
 
 data("train_set")
 
-data_df = train_set %>% 
-  rename(target = serious_dlqin_2yrs) %>% 
-  identity()
+data("test_set")
 
+data("names_table")
 
-data_df = data_df %>% 
-  slice_sample(n = 10000)
+train_set = train_set %>% 
+  rename_at(names_table$full_name, ~names_table$feature_name)
 
-rm(train_set)
+test_set = test_set %>% 
+  rename_at(names_table$full_name, ~names_table$feature_name)
+
 
 ```
 
 ```{r split_data}
 
-data_split = initial_split(data_df, strata = target)
+indices = list(analysis = seq(nrow(train_set)),
+               assessment = nrow(train_set) + seq(nrow(test_set)))
+
+comb_data = train_set %>% 
+  bind_rows(test_set)
+
+data_split = make_splits(ind = indices, data = comb_data)
+
+rm(indices, test_set, comb_data)
 
 train_set = training(data_split)
 
-test_set = testing(data_split)
+train_set = train_set %>% 
+  slice_sample(n = 50000)
 
 ```
 
 ```{r define_preprocess_recipes}
 
 preprocess_recipe = recipe(formula = target ~ ., data = train_set) %>%
-  step_mutate(target = factor(target, levels = c(1,0))) %>% 
-  step_filter(monthly_income >= 1000) %>% 
-  step_impute_median("number_of_dependents") %>% 
-  step_mutate_at(c("monthly_income", "debt_ratio"),
-                 fn = ~ DescTools::Winsorize(., probs = c(0,0.95), na.rm = TRUE)) %>% 
-  step_mutate_at(c("monthly_income", "debt_ratio"),
-                 fn = ~ log(. + 1)) %>% 
-  step_impute_median("monthly_income") %>% 
-  step_normalize(all_predictors())
+  step_mutate(target = factor(target, levels = c(1, 0))) %>%
+  step_impute_median("dependents")  %>%
+  step_impute_median("income") %>% 
+  step_filter(income >= 1000) %>%
+  step_mutate_at(c("income", "debt_ratio", "ruul"),
+                 fn = ~ DescTools::Winsorize(., probs = c(0, 0.95),
+                                             na.rm = TRUE)) %>% 
+  step_mutate(debt_log = (log(debt_ratio * income + 1))) %>% 
+  step_center(contains("due")) %>% 
+  identity()
 
 
 ```
 
 ```{r define_models}
 
-logit_mod = logistic_reg(penalty = tune()) %>% 
-  set_engine("glmnet")
-
-svm_lin_mod = svm_linear(cost = tune()) %>% 
-  set_mode("classification") %>% 
-  set_engine("kernlab")
-
-svm_rbf_mod = svm_rbf(cost = tune()) %>% 
-  set_mode("classification") %>% 
-  set_engine("kernlab")
-
-
 rf_mod = rand_forest(mtry = tune(),trees = 1000) %>% 
   set_mode("classification") %>% 
   set_engine("ranger")
+
+
 
 ```
 
@@ -78,37 +82,61 @@ cv_resamples = vfold_cv(v = 5, data = train_set)
 
 ```
 
-```{r pack_workflowset}
-
-wf_set = workflow_set(
-  preproc = list(preproc = preprocess_recipe),
-  models = list(
-    logit = logit_mod,
-    svm_lin = svm_lin_mod,
-    svm_rbf = svm_rbf_mod
-  )
-)
+```{r estimate}
 
 
-model_train = wf_set %>%
-  workflow_map(resamples = cv_resamples,
-               fn = "tune_grid",
-               grid = 10,
-               verbose = TRUE)
+rf_wf = workflow() %>% 
+  add_recipe(preprocess_recipe) %>% 
+  add_model(rf_mod)
 
+tic()
 
-```
+cl = makePSOCKcluster(3)
 
-```{r evaluate_results}
+registerDoParallel()
 
-model_train %>% 
-  rank_results(select_best = TRUE) %>% 
-  filter(.metric == "roc_auc") %>% 
-  select(wflow_id, mean, std_err, model, rank)
+rf_res = rf_wf %>%
+  tune_grid(resamples = cv_resamples,grid = 10)
+
+stopCluster(cl)
+
+toc()
 
 ```
 
-```{r plot_results}
+```{r plot_results, eval=FALSE}
+
+metrics = rf_res %>% 
+  collect_metrics() %>% 
+  filter(.metric == "roc_auc")
+
+ggplot() +
+  geom_point(data = metrics, aes(x = as_factor(mtry), y = mean)) +
+  geom_errorbar(data = metrics, aes(
+    x = as_factor(mtry),
+    ymin = mean - std_err,
+    ymax = mean + std_err
+  ))
+
+```
+
+```{r forecast, eval=FALSE}
+
+forecast = rf_wf %>% 
+  finalize_workflow(rf_res %>%
+                select_best("roc_auc")) %>% 
+  last_fit(data_split)
+
+
+forecast_df = forecast %>% 
+  collect_predictions()
+
+
+forecast_df %>%
+  mutate(Id = row_number()) %>%
+  select(Id, Probability = .pred_1) %>%
+  write_csv("C:\\Users\\Home\\Desktop\\rf.csv")
+
 
 ```
 
