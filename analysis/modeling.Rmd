@@ -9,6 +9,8 @@ library(tictoc)
 
 library(doParallel)
 
+library(vip)
+
 
 ```
 
@@ -82,7 +84,7 @@ cv_resamples = vfold_cv(v = 5, data = train_set)
 
 ```
 
-```{r estimate}
+```{r tune_parameters}
 
 
 rf_wf = workflow() %>% 
@@ -104,7 +106,26 @@ toc()
 
 ```
 
-```{r plot_results, eval=FALSE}
+```{r fit_model, eval=FALSE}
+
+rf_fit = workflow() %>%
+  add_recipe(preprocess_recipe) %>%
+  add_model(rand_forest(mode = "classification", mtry = 1, trees = 1000) %>%
+              set_engine("ranger",importance = "impurity")) %>%
+  fit(train_set)
+
+```
+
+```{r plot_feature_importance, eval=FALSE}
+
+rf_fit %>% 
+  extract_fit_parsnip() %>% 
+  vip() + 
+  ggtitle("Feature importance")
+
+```
+
+```{r plot_tune_metrics, eval=FALSE}
 
 metrics = rf_res %>% 
   collect_metrics() %>% 
